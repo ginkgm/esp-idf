@@ -64,11 +64,21 @@ typedef struct spi_device_t spi_device_t;
 
 #define NO_CS 3     //Number of CS pins per SPI host
 
+
+/// struct to hold temporary tx and rx buffer that is DMA-accessable
+typedef struct {        
+    spi_transaction_t   *trans;
+    const uint32_t *txbuf;  //place the address malloc or given by user app.
+    uint32_t *tx_malloc_add; // if user address is not DMA-accessable, malloc a new one, or left 0.
+    uint32_t *rxbuf;
+    uint32_t *rx_malloc_add;
+} spi_transaction_wbuf;
+
 typedef struct {
     spi_device_t *device[NO_CS];
     intr_handle_t intr;
     spi_dev_t *hw;
-    spi_transaction_t *cur_trans;
+    spi_transaction_wbuf *cur_trans_buf;
     int cur_cs;
     lldesc_t *dmadesc_tx;
     lldesc_t *dmadesc_rx;
@@ -259,7 +269,7 @@ esp_err_t spi_bus_remove_device(spi_device_handle_t handle)
     //These checks aren't exhaustive; another thread could sneak in a transaction inbetween. These are only here to
     //catch design errors and aren't meant to be triggered during normal operation.
     SPI_CHECK(uxQueueMessagesWaiting(handle->trans_queue)==0, "Have unfinished transactions", ESP_ERR_INVALID_STATE);
-    SPI_CHECK(handle->host->cur_trans==0 || handle->host->device[handle->host->cur_cs]!=handle, "Have unfinished transactions", ESP_ERR_INVALID_STATE);
+    SPI_CHECK(handle->host->cur_trans_buf==0 || handle->host->device[handle->host->cur_cs]!=handle, "Have unfinished transactions", ESP_ERR_INVALID_STATE);
     SPI_CHECK(uxQueueMessagesWaiting(handle->ret_queue)==0, "Have unfinished transactions", ESP_ERR_INVALID_STATE);
 
     //Kill queues
@@ -343,35 +353,31 @@ static void IRAM_ATTR spi_intr(void *arg)
     int prevCs=-1;
     BaseType_t r;
     BaseType_t do_yield=pdFALSE;
+    spi_transaction_wbuf *trans_buf=NULL;
     spi_transaction_t *trans=NULL;
     spi_host_t *host=(spi_host_t*)arg;
 
     //Ignore all but the trans_done int.
     if (!host->hw->slave.trans_done) return;
 
-    if (host->cur_trans) {
+    if (host->cur_trans_buf) {
+        spi_transaction_t *cur_trans = host->cur_trans_buf->trans;
         //Okay, transaction is done. 
-        if ((host->cur_trans->rx_buffer || (host->cur_trans->flags & SPI_TRANS_USE_RXDATA)) && host->dma_chan == 0) {
+        if (host->cur_trans_buf->rxbuf && host->dma_chan == 0 ) {
             //Need to copy from SPI regs to result buffer.
-            uint32_t *data;
-            if (host->cur_trans->flags & SPI_TRANS_USE_RXDATA) {
-                data=(uint32_t*)&host->cur_trans->rx_data[0];
-            } else {
-                data=(uint32_t*)host->cur_trans->rx_buffer;
-            }
-            for (int x=0; x < host->cur_trans->rxlength; x+=32) {
+            for (int x=0; x < cur_trans->rxlength; x+=32) {
                 //Do a memcpy to get around possible alignment issues in rx_buffer
                 uint32_t word=host->hw->data_buf[x/32];
-                int len=host->cur_trans->rxlength-x;
+                int len=cur_trans->rxlength-x;
                 if (len>32) len=32;
-                memcpy(&data[x/32], &word, (len+7)/8);
+                memcpy(&host->cur_trans_buf->rxbuf[x/32], &word, (len+7)/8);
             }
         }
         //Call post-transaction callback, if any
-        if (host->device[host->cur_cs]->cfg.post_cb) host->device[host->cur_cs]->cfg.post_cb(host->cur_trans);
+        if (host->device[host->cur_cs]->cfg.post_cb) host->device[host->cur_cs]->cfg.post_cb(cur_trans);
         //Return transaction descriptor.
-        xQueueSendFromISR(host->device[host->cur_cs]->ret_queue, &host->cur_trans, &do_yield);
-        host->cur_trans=NULL;
+        xQueueSendFromISR(host->device[host->cur_cs]->ret_queue, &host->cur_trans_buf, &do_yield);
+        host->cur_trans_buf=NULL;
         prevCs=host->cur_cs;
     }
     //Tell common code DMA workaround that our DMA channel is idle. If needed, the code will do a DMA reset.
@@ -379,7 +385,7 @@ static void IRAM_ATTR spi_intr(void *arg)
     //ToDo: This is a stupidly simple low-cs-first priority scheme. Make this configurable somehow. - JD
     for (i=0; i<NO_CS; i++) {
         if (host->device[i]) {
-            r=xQueueReceiveFromISR(host->device[i]->trans_queue, &trans, &do_yield);
+            r=xQueueReceiveFromISR(host->device[i]->trans_queue, &trans_buf, &do_yield);
             //Stop looking if we have a transaction to send.
             if (r) break;
         }
@@ -391,16 +397,12 @@ static void IRAM_ATTR spi_intr(void *arg)
         host->hw->slave.trans_done=0; //clear int bit
         //We have a transaction. Send it.
         spi_device_t *dev=host->device[i];
-        host->cur_trans=trans;
+        host->cur_trans_buf=trans_buf;
+        trans = trans_buf->trans;
         host->cur_cs=i;
         //We should be done with the transmission.
         assert(host->hw->cmd.usr == 0);
         
-        //Default rxlength to be the same as length, if not filled in.
-        if (trans->rxlength==0) {
-            trans->rxlength=trans->length;
-        }
-
         //Reconfigure according to device settings, but only if we change CSses.
         if (i!=prevCs) {
             //Assumes a hardcoded 80MHz Fapb for now. ToDo: figure out something better once we have
@@ -498,19 +500,13 @@ static void IRAM_ATTR spi_intr(void *arg)
 
 
         //Fill DMA descriptors
-        if (trans->rx_buffer || (trans->flags & SPI_TRANS_USE_RXDATA)) {
-            uint32_t *data;
-            if (trans->flags & SPI_TRANS_USE_RXDATA) {
-                data=(uint32_t *)&trans->rx_data[0];
-            } else {
-                data=trans->rx_buffer;
-            }
+        if (trans_buf->rxbuf) {
             host->hw->user.usr_miso_highpart=0;
             if (host->dma_chan == 0) {
                 //No need to setup anything; we'll copy the result out of the work registers directly later.
             } else {
                 spicommon_dmaworkaround_transfer_active(host->dma_chan); //mark channel as active
-                spicommon_setup_dma_desc_links(host->dmadesc_rx, ((trans->rxlength+7)/8), (uint8_t*)data, true);
+                spicommon_setup_dma_desc_links(host->dmadesc_rx, ((trans->rxlength+7)/8), (uint8_t*)trans_buf->rxbuf, true);
                 host->hw->dma_in_link.addr=(int)(&host->dmadesc_rx[0]) & 0xFFFFF;
                 host->hw->dma_in_link.start=1;
             }
@@ -519,25 +515,19 @@ static void IRAM_ATTR spi_intr(void *arg)
             host->hw->user.usr_miso=0;
         }
 
-        if (trans->tx_buffer || (trans->flags & SPI_TRANS_USE_TXDATA)) {
-            uint32_t *data;
-            if (trans->flags & SPI_TRANS_USE_TXDATA) {
-                data=(uint32_t *)&trans->tx_data[0];
-            } else {
-                data=(uint32_t *)trans->tx_buffer;
-            }
+        if (trans_buf->txbuf) {
             if (host->dma_chan == 0) {
                 //Need to copy data to registers manually
                 for (int x=0; x < trans->length; x+=32) {
                     //Use memcpy to get around alignment issues for txdata
                     uint32_t word;
-                    memcpy(&word, &data[x/32], 4);
+                    memcpy(&word, &trans_buf->txbuf[x/32], 4);
                     host->hw->data_buf[(x/32)+8]=word;
                 }
                 host->hw->user.usr_mosi_highpart=1;
             } else {
                 spicommon_dmaworkaround_transfer_active(host->dma_chan); //mark channel as active
-                spicommon_setup_dma_desc_links(host->dmadesc_tx, (trans->length+7)/8, (uint8_t*)data, false);
+                spicommon_setup_dma_desc_links(host->dmadesc_tx, (trans->length+7)/8, (uint8_t*)trans_buf->txbuf, false);
                 host->hw->user.usr_mosi_highpart=0;
                 host->hw->dma_out_link.addr=(int)(&host->dmadesc_tx[0]) & 0xFFFFF;
                 host->hw->dma_out_link.start=1;
@@ -554,8 +544,8 @@ static void IRAM_ATTR spi_intr(void *arg)
         } else {
             host->hw->addr=trans->address & 0xffffffff;
         }
-        host->hw->user.usr_mosi=(trans->tx_buffer!=NULL || (trans->flags & SPI_TRANS_USE_TXDATA))?1:0;
-        host->hw->user.usr_miso=(trans->rx_buffer!=NULL || (trans->flags & SPI_TRANS_USE_RXDATA))?1:0;
+        host->hw->user.usr_mosi=(trans_buf->txbuf)?1:0;
+        host->hw->user.usr_miso=(trans_buf->rxbuf)?1:0;
 
         //Call pre-transmission callback, if any
         if (dev->cfg.pre_cb) dev->cfg.pre_cb(trans);
@@ -570,28 +560,117 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
 {
     BaseType_t r;
     SPI_CHECK(handle!=NULL, "invalid dev handle", ESP_ERR_INVALID_ARG);
-    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_RXDATA)==0 ||trans_desc->rxlength <= 32, "rxdata transfer > 32 bits", ESP_ERR_INVALID_ARG);
-    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_TXDATA)==0 ||trans_desc->length <= 32, "txdata transfer > 32 bits", ESP_ERR_INVALID_ARG);
+    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_RXDATA)==0 ||trans_desc->rxlength <= 32, "rxdata transfer > 32 bits without configured DMA", ESP_ERR_INVALID_ARG);
+    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_TXDATA)==0 ||trans_desc->length <= 32, "txdata transfer > 32 bits without configured DMA", ESP_ERR_INVALID_ARG);
     SPI_CHECK(!((trans_desc->flags & (SPI_TRANS_MODE_DIO|SPI_TRANS_MODE_QIO)) && (handle->cfg.flags & SPI_DEVICE_3WIRE)), "incompatible iface params", ESP_ERR_INVALID_ARG);
     SPI_CHECK(!((trans_desc->flags & (SPI_TRANS_MODE_DIO|SPI_TRANS_MODE_QIO)) && (!(handle->cfg.flags & SPI_DEVICE_HALFDUPLEX))), "incompatible iface params", ESP_ERR_INVALID_ARG);
     SPI_CHECK(trans_desc->length <= handle->host->max_transfer_sz*8, "txdata transfer > host maximum", ESP_ERR_INVALID_ARG);
     SPI_CHECK(trans_desc->rxlength <= handle->host->max_transfer_sz*8, "rxdata transfer > host maximum", ESP_ERR_INVALID_ARG);
-    SPI_CHECK(handle->host->dma_chan == 0 || (trans_desc->flags & SPI_TRANS_USE_TXDATA) || 
-                trans_desc->tx_buffer==NULL || esp_ptr_dma_capable(trans_desc->tx_buffer), "txdata not in DMA-capable memory", ESP_ERR_INVALID_ARG);
-    SPI_CHECK(handle->host->dma_chan == 0 || (trans_desc->flags & SPI_TRANS_USE_RXDATA) || 
-                trans_desc->rx_buffer==NULL || esp_ptr_dma_capable(trans_desc->rx_buffer), "rxdata not in DMA-capable memory", ESP_ERR_INVALID_ARG);
-    r=xQueueSend(handle->trans_queue, (void*)&trans_desc, ticks_to_wait);
+
+    //Default rxlength to be the same as length, if not filled in.
+    if (trans_desc->rxlength==0) {
+        trans_desc->rxlength=trans_desc->length;
+    }
+
+    spi_transaction_wbuf *trans_buf = malloc(sizeof(spi_transaction_wbuf));
+    if ( NULL==trans_buf )
+        goto nomem;
+    memset( trans_buf, 0, sizeof(spi_transaction_wbuf) );
+    trans_buf->trans = trans_desc;
+
+    uint32_t *rxdata;
+    // rx memory assign
+    if ( trans_desc->flags & SPI_TRANS_USE_RXDATA )
+        rxdata = (uint32_t*)&trans_desc->rx_data[0];
+    else if ( trans_desc->rx_buffer )
+        rxdata = trans_desc->rx_buffer;
+    else
+        rxdata = NULL;
+
+    if ( rxdata && handle->host->dma_chan && !esp_ptr_dma_capable( rxdata )) {
+        //if rxbuf in the desc not DMA-accessable, malloc a new one
+        trans_buf->rx_malloc_add= heap_caps_malloc((trans_desc->rxlength+7)/8, MALLOC_CAP_DMA);
+        if ( NULL==trans_buf->rx_malloc_add )
+            goto nomem;
+        trans_buf->rxbuf = trans_buf->rx_malloc_add;
+    }
+    else    // else use its own or assign to NULL
+        trans_buf->rxbuf = rxdata;
+    
+    const uint32_t *txdata;
+    // tx memory assign
+    if ( trans_desc->flags & SPI_TRANS_USE_TXDATA )
+        txdata = (uint32_t*)&trans_desc->tx_data[0];
+    else if ( trans_desc->tx_buffer )
+        txdata = trans_desc->tx_buffer ;
+    else
+        txdata = NULL;
+
+    if ( txdata && handle->host->dma_chan && !esp_ptr_dma_capable( txdata ))    {
+        //if txbuf in the desc not DMA-accessable, malloc a new one
+        trans_buf->tx_malloc_add = heap_caps_malloc((trans_desc->length+7)/8, MALLOC_CAP_DMA);
+        if ( NULL==trans_buf->tx_malloc_add )
+            goto nomem;
+        memcpy( trans_buf->tx_malloc_add, txdata, (trans_desc->length+7)/8 );
+        //since tx_buffer is defined in const, use a non-const pointer to hold the malloc address (so can be freed later).
+        //and assign the pointer to the const pointer txbuf.
+        trans_buf->txbuf= trans_buf->tx_malloc_add;
+    }
+    else    // else use its own or assign to NULL
+        trans_buf->txbuf = txdata;
+
+    r=xQueueSend(handle->trans_queue, (void*)&trans_buf, ticks_to_wait);
     if (!r) return ESP_ERR_TIMEOUT;
     esp_intr_enable(handle->host->intr);
     return ESP_OK;
+
+nomem:
+    if ( trans_buf ) {
+        if ( trans_buf->rx_malloc_add )
+            free(trans_buf->rx_malloc_add);
+        if ( trans_buf->tx_malloc_add )
+            free(trans_buf->tx_malloc_add);
+
+        free(trans_buf);
+    }
+
+    return ESP_ERR_NO_MEM;
 }
 
 esp_err_t spi_device_get_trans_result(spi_device_handle_t handle, spi_transaction_t **trans_desc, TickType_t ticks_to_wait)
 {
     BaseType_t r;
+    spi_transaction_wbuf *trans_buf;
+    
     SPI_CHECK(handle!=NULL, "invalid dev handle", ESP_ERR_INVALID_ARG);
-    r=xQueueReceive(handle->ret_queue, (void*)trans_desc, ticks_to_wait);
-    if (!r) return ESP_ERR_TIMEOUT;
+    r=xQueueReceive(handle->ret_queue, (void*)&trans_buf, ticks_to_wait);
+    if (!r) {
+        // The memory occupied by rx and tx DMA buffer destroyed only when receiving from the queue (transaction finished).
+        // If timeout, wait and retry. 
+        // Every on-flight transaction request occupies internal memory as DMA buffer if needed.
+        return ESP_ERR_TIMEOUT;
+    }
+
+    (*trans_desc) = trans_buf->trans;
+
+    if ( trans_buf->rx_malloc_add ) {
+        uint32_t *rxdata; 
+        if ( (*trans_desc)->flags & SPI_TRANS_USE_RXDATA )
+            rxdata = (uint32_t*)&((*trans_desc)->rx_data[0]);
+        else if ( (*trans_desc)->rx_buffer )
+            rxdata = (*trans_desc)->rx_buffer;
+        else
+            rxdata = NULL;
+
+        if ( rxdata )
+            memcpy( rxdata, trans_buf->rx_malloc_add, ((*trans_desc)->rxlength+7)/8 );        
+        free(trans_buf->rx_malloc_add);
+    }
+    if ( trans_buf->tx_malloc_add )
+        free(trans_buf->tx_malloc_add);
+    
+    free(trans_buf);
+
     return ESP_OK;
 }
 
