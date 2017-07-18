@@ -51,6 +51,30 @@ typedef struct {
 } ili_init_cmd_t;
 
 //Place data into DRAM. Constant data gets placed into DROM by default, which is not accessible by DMA.
+
+#ifdef CONFIG_LCD_TYPE_ST7789V
+
+DRAM_ATTR static const ili_init_cmd_t ili_init_cmds[]={
+    {0x36, {(1<<5)|(1<<6)}, 1},
+    {0x3A, {0x55}, 1},
+    {0xB2, {0x0c, 0x0c, 0x00, 0x33, 0x33}, 5},
+    {0xB7, {0x45}, 1},
+    {0xBB, {0x2B}, 1},
+    {0xC0, {0x2C}, 1},
+    {0xC2, {0x01, 0xff}, 2},
+    {0xC3, {0x11}, 1},
+    {0xC4, {0x20}, 1},
+    {0xC6, {0x0f}, 1},
+    {0xD0, {0xA4, 0xA1}, 1},
+    {0xE0, {0xD0, 0x00, 0x05, 0x0E, 0x15, 0x0D, 0x37, 0x43, 0x47, 0x09, 0x15, 0x12, 0x16, 0x19}, 14},
+    {0xE1, {0xD0, 0x00, 0x05, 0x0D, 0x0C, 0x06, 0x2D, 0x44, 0x40, 0x0E, 0x1C, 0x18, 0x16, 0x19}, 14},
+    {0x11, {0}, 0x80},
+    {0x29, {0}, 0x80},
+    {0, {0}, 0xff}
+};
+
+#elif defined(CONFIG_LCD_TYPE_ILI9341)
+
 DRAM_ATTR static const ili_init_cmd_t ili_init_cmds[]={
     {0xCF, {0x00, 0x83, 0X30}, 3},
     {0xED, {0x64, 0x03, 0X12, 0X81}, 4},
@@ -78,6 +102,9 @@ DRAM_ATTR static const ili_init_cmd_t ili_init_cmds[]={
     {0x29, {0}, 0x80},
     {0, {0}, 0xff},
 };
+
+#endif
+
 
 //Send a command to the ILI9341. Uses spi_device_transmit, which waits until the transfer is complete.
 void ili_cmd(spi_device_handle_t spi, const uint8_t cmd) 
@@ -130,6 +157,13 @@ void ili_init(spi_device_handle_t spi)
     vTaskDelay(100 / portTICK_RATE_MS);
 
     //Send all the commands
+
+#ifdef CONFIG_LCD_TYPE_ST7789V
+        printf("LCD ST7789V initialization.\n");
+#elif defined( CONFIG_LCD_TYPE_ILI9341)
+        printf("LCD ILI9341 initialization.\n");   
+#endif   
+
     while (ili_init_cmds[cmd].databytes!=0xff) {
         ili_cmd(spi, ili_init_cmds[cmd].cmd);
         ili_data(spi, ili_init_cmds[cmd].data, ili_init_cmds[cmd].databytes&0x1F);
