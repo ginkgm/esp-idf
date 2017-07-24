@@ -259,3 +259,79 @@ TEST_CASE("SPI Master test, interaction of multiple devs", "[spi][ignore]") {
     destroy_spi_bus(handle1);
 }
 
+
+
+IRAM_ATTR  static uint32_t data_iram[320];
+DRAM_ATTR  static uint32_t data_dram[320];
+static const uint32_t data_drom[320];
+
+
+
+TEST_CASE("SPI Master DMA test, TX and RX in different regions", "[spi]"){
+
+    uint32_t data_rxdram[320];
+
+
+    esp_err_t ret;
+    spi_device_handle_t spi;
+    spi_bus_config_t buscfg={
+        .miso_io_num=PIN_NUM_MISO,
+        .mosi_io_num=PIN_NUM_MOSI,
+        .sclk_io_num=PIN_NUM_CLK,
+        .quadwp_io_num=-1,
+        .quadhd_io_num=-1
+    };
+    spi_device_interface_config_t devcfg={
+        .clock_speed_hz=10000000,               //Clock out at 10 MHz
+        .mode=0,                                //SPI mode 0
+        .spics_io_num=PIN_NUM_CS,               //CS pin
+        .queue_size=7,                          //We want to be able to queue 7 transactions at a time
+        .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
+    };
+    //Initialize the SPI bus
+    ret=spi_bus_initialize(HSPI_HOST, &buscfg, 1);
+    assert(ret==ESP_OK);
+    //Attach the LCD to the SPI bus
+    ret=spi_bus_add_device(HSPI_HOST, &devcfg, &spi);
+    assert(ret==ESP_OK);
+
+
+    uint16_t buffer[320];
+    esp_err_t ret;
+    static spi_transaction_t trans[6];
+    int x;
+
+    memset(trans, 0, 6*sizeof(spi_transaction_t));
+
+    trans[0].length = 320*8,
+    trans[0].tx_buffer = data_iram;
+    trans[0].rx_buffer = data_rxdram;
+
+    trans[1].length = 320*8,
+    trans[1].tx_buffer = data_dram;
+    trans[1].rx_buffer = data_rxdram;
+
+    trans[2].length = 320*8,
+    trans[2].tx_buffer = data_drom;
+    trans[2].rx_buffer = data_rxdram;
+
+    trans[3].length = 320*8,
+    trans[3].tx_buffer = data_drom;
+    trans[3].rx_buffer = data_iram;
+
+    trans[4].length = 320*8,
+    trans[4].rxlength = 8*4;
+    trans[4].tx_buffer = data_drom;
+    trans[4].flag = SPI_TRANS_USE_RXDATA;
+    
+    trans[5].length = 8*4;
+    trans[5].flag = SPI_TRANS_USE_RXDATA | SPI_TRANS_USE_TXDATA;
+
+
+    //Queue all transactions.
+    for (x=0; x<6; x++) {
+        ret=spi_device_transmit(spi,&trans[x]);
+        assert(ret==ESP_OK);
+    }
+    
+}
