@@ -502,6 +502,7 @@ static void IRAM_ATTR spi_intr(void *arg)
         }
 
 
+
         //Fill DMA descriptors
         if (trans_buf->rxbuf) {
             host->hw->user.usr_miso_highpart=0;
@@ -523,9 +524,11 @@ static void IRAM_ATTR spi_intr(void *arg)
             }
         }
 
+
         if (trans_buf->txbuf) {
             if (host->dma_chan == 0) {
                 //Need to copy data to registers manually
+                //TODO: the alignment problem may not gotten arround correctly, fixed it.
                 for (int x=0; x < trans->length; x+=32) {
                     //Use memcpy to get around alignment issues for txdata
                     uint32_t word;
@@ -542,6 +545,7 @@ static void IRAM_ATTR spi_intr(void *arg)
                 host->hw->user.usr_mosi_highpart=0;
             }
         }
+
         host->hw->mosi_dlen.usr_mosi_dbitlen=trans->length-1;
         host->hw->miso_dlen.usr_miso_dbitlen=trans->rxlength-1;
 
@@ -558,8 +562,11 @@ static void IRAM_ATTR spi_intr(void *arg)
         //Call pre-transmission callback, if any
         if (dev->cfg.pre_cb) dev->cfg.pre_cb(trans);
         //Kick off transfer
+
         host->hw->cmd.usr=1;
     }
+
+
     if (do_yield) portYIELD_FROM_ISR();
 }
 
@@ -647,7 +654,8 @@ esp_err_t spi_device_get_trans_result(spi_device_handle_t handle, spi_transactio
 {
     BaseType_t r;
     spi_transaction_wbuf *trans_buf;
-    
+
+
     SPI_CHECK(handle!=NULL, "invalid dev handle", ESP_ERR_INVALID_ARG);
     r=xQueueReceive(handle->ret_queue, (void*)&trans_buf, ticks_to_wait);
     if (!r) {
@@ -672,10 +680,12 @@ esp_err_t spi_device_get_trans_result(spi_device_handle_t handle, spi_transactio
             memcpy( rxdata, trans_buf->rx_malloc_add, ((*trans_desc)->rxlength+7)/8 );        
         free(trans_buf->rx_malloc_add);
     }
+
     if ( trans_buf->tx_malloc_add )
         free(trans_buf->tx_malloc_add);
     
     free(trans_buf);
+
 
     return ESP_OK;
 }
@@ -685,6 +695,7 @@ esp_err_t spi_device_transmit(spi_device_handle_t handle, spi_transaction_t *tra
 {
     esp_err_t ret;
     spi_transaction_t *ret_trans;
+    printf("spi_device_transmit.\n");
     //ToDo: check if any spi transfers in flight
     ret=spi_device_queue_trans(handle, trans_desc, portMAX_DELAY);
     if (ret!=ESP_OK) return ret;
