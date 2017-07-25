@@ -687,10 +687,16 @@ static void display_pretty_colors(spi_device_handle_t spi)
 
 void app_main()
 {
-    uint8_t slv_buffer[] = {0xff, 0xff, 0xff, 0xff, 0xef, 0x14};
+    uint8_t slv_buffer[] = {0x12, 0x34, 0x56, 0x78, 0xef, 0x14};
     uint16_t buffer[320*2];
     esp_err_t ret;
     spi_device_handle_t spi;
+    spi_dev_t *hw;
+
+
+    memset( buffer, 0x66, 320*2);
+
+    /*--------- initial of spi master -----------------------------*/
     spi_bus_config_t buscfg={
         .miso_io_num=PIN_NUM_MISO,
         .mosi_io_num=PIN_NUM_MOSI,
@@ -704,9 +710,10 @@ void app_main()
         .spics_io_num=PIN_NUM_CS,               //CS pin
         .queue_size=7,                          //We want to be able to queue 7 transactions at a time
         .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
-//        .flags = SPI_DEVICE_HALFDUPLEX,
+        .flags = SPI_DEVICE_HALFDUPLEX,
+//        .command_bits = 8,
+//        .address_bits = 24,
     };
-
     
     //Initialize the SPI bus
     ret=spi_bus_initialize(HSPI_HOST, &buscfg, 1);
@@ -716,12 +723,13 @@ void app_main()
     assert(ret==ESP_OK);
 
 
+    /*------------ initial of spi slave -----------------------------*/
+    //reuse buscfg
 
+    /*    
     buscfg.miso_io_num = PIN_NUM_SLV_MISO;
     buscfg.mosi_io_num = PIN_NUM_SLV_MOSI;
     buscfg.sclk_io_num = PIN_NUM_SLV_CLK;
-
-
     //Configuration for the SPI slave interface
     spi_slave_interface_config_t slvcfg={
         .mode=0,
@@ -735,7 +743,7 @@ void app_main()
     ret=spi_slave_initialize(VSPI_HOST, &buscfg, &slvcfg, 2);
     assert(ret==ESP_OK);
 
-
+    //send spi slave packet
     spi_slave_transaction_t trans_slave;
     memset(&trans_slave, 0, sizeof(spi_slave_transaction_t));  
     trans_slave.length = 6*8;
@@ -743,32 +751,35 @@ void app_main()
     ret=spi_slave_queue_trans(VSPI_HOST, &trans_slave, portMAX_DELAY);
     assert(ret==ESP_OK);
 
+    gpio_config_t io_conf={
+        .intr_type=GPIO_INTR_DISABLE,
+        .mode=GPIO_MODE_OUTPUT,
+        .pin_bit_mask=(1<<PIN_NUM_SLV_MISO)
+    };
 
+    //Configure handshake line as output
+    gpio_config(&io_conf);
+    gpio_set_level( PIN_NUM_SLV_MISO, 1 );
+    */
 
-    
-
+//TODO: length 0    
     spi_transaction_t trans;
     memset(&trans, 0, sizeof(spi_transaction_t));
-
- //   for ( int i = 0; i < 8; i ++ ) {
-        trans.rx_buffer=buffer;
-        trans.tx_buffer=ili_pic_data+12;
-        trans.length=6*8;;
-
-//        if ( i == 2 )
-//            trans.rx_buffer=0;
-
-        spi_device_transmit(spi, &trans);
-        for( int i = 0; i < 6; i ++ ) {
-            printf("%02X ", ((uint8_t*)buffer)[i]);
-        }
-        printf("\n");
-//    }
-
+    trans.rx_buffer=buffer;
+    trans.tx_buffer=ili_pic_data;
+    trans.length=8*4;
+    trans.rxlength=8*2;
+//    trans.flags = SPI_TRANS_USE_RXDATA;
+    spi_device_transmit(spi, &trans);
+    
+//    hw=spicommon_hw_for_host(2);
+//    printf("%d: ", hw->slv_rd_bit.val + 1 );
+    
+    for( int i = 0; i < 6; i ++ ) {
+        printf("%02X ", ((uint8_t*)buffer)[i]);
+    }
+    printf("\n");
     while(1);
-
-
-
 
 
 
@@ -791,7 +802,7 @@ printf("%p\n",ili_pic_data);
 
     vTaskDelay(100);
 
-    spi_dev_t *hw=spicommon_hw_for_host(1);
+ //   hw=spicommon_hw_for_host(1);
     uint32_t *ptr = hw->data_buf;
 
     for ( int i = 0; i < 16; i ++ )

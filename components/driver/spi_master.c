@@ -510,6 +510,7 @@ static void IRAM_ATTR spi_intr(void *arg)
                 //No need to setup anything; we'll copy the result out of the work registers directly later.
             } else {
                 spicommon_dmaworkaround_transfer_active(host->dma_chan); //mark channel as active
+                ets_printf("%p: %d\n",trans_buf->rxbuf, ((trans->rxlength+7)/8));
                 spicommon_setup_dma_desc_links(host->dmadesc_rx, ((trans->rxlength+7)/8), (uint8_t*)trans_buf->rxbuf, true);
                 host->hw->dma_in_link.addr=(int)(&host->dmadesc_rx[0]) & 0xFFFFF;
                 host->hw->dma_in_link.start=1;

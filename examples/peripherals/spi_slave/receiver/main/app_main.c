@@ -51,10 +51,10 @@ sending a transaction. As soon as the transaction is done, the line gets set low
 Pins in use. The SPI Master can use the GPIO mux, so feel free to change these if needed.
 */
 #define GPIO_HANDSHAKE 2
-#define GPIO_MOSI 12
-#define GPIO_MISO 13
-#define GPIO_SCLK 15
-#define GPIO_CS 14
+#define GPIO_MISO 12
+#define GPIO_MOSI 13
+#define GPIO_SCLK 14
+#define GPIO_CS 15
 
 
 //Called after a transaction is queued and ready for pickup by master. We use this to set the handshake line high.
@@ -70,6 +70,7 @@ void my_post_trans_cb(spi_slave_transaction_t *trans) {
 //Main application
 void app_main()
 {
+    uint8_t buffer[8] = {0xff, 0xff, 0xff, 0xff, 0xef, 0x14,0x77, 0x77};
     int n=0;
     esp_err_t ret;
 
@@ -120,8 +121,8 @@ void app_main()
         sprintf(sendbuf, "This is the receiver, sending data for transmission number %04d.", n);
 
         //Set up a transaction of 128 bytes to send/receive
-        t.length=128*8;
-        t.tx_buffer=sendbuf;
+        t.length=6*8;
+        t.tx_buffer=buffer;
         t.rx_buffer=recvbuf;
         /* This call enables the SPI slave interface to send/receive to the sendbuf and recvbuf. The transaction is
         initialized by the SPI master, however, so it will not actually happen until the master starts a hardware transaction
