@@ -516,6 +516,11 @@ static void IRAM_ATTR spi_intr(void *arg)
             host->hw->user.usr_miso=1;
         } else {
             host->hw->user.usr_miso=0;
+            //spi fix: let RX DMA work somehow to avoid the problem
+            if (host->dma_chan != 0 ){
+                host->hw->dma_in_link.addr=0;
+                host->hw->dma_in_link.start=1;
+            }
         }
 
         if (trans_buf->txbuf) {
@@ -569,6 +574,8 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
     SPI_CHECK(!((trans_desc->flags & (SPI_TRANS_MODE_DIO|SPI_TRANS_MODE_QIO)) && (!(handle->cfg.flags & SPI_DEVICE_HALFDUPLEX))), "incompatible iface params", ESP_ERR_INVALID_ARG);
     SPI_CHECK(trans_desc->length <= handle->host->max_transfer_sz*8, "txdata transfer > host maximum", ESP_ERR_INVALID_ARG);
     SPI_CHECK(trans_desc->rxlength <= handle->host->max_transfer_sz*8, "rxdata transfer > host maximum", ESP_ERR_INVALID_ARG);
+    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_RXDATA) || trans_desc->rxlength == 0 || trans_desc->rx_buffer, "rx_buffer not assigned", ESP_ERR_INVALID_ARG);
+    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_TXDATA) || trans_desc->length == 0 || trans_desc->tx_buffer, "tx_buffer not assigned", ESP_ERR_INVALID_ARG);
 
     //Default rxlength to be the same as length, if not filled in.
     // set rxlength to length is ok, even when rx buffer=NULL
