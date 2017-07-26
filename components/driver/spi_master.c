@@ -516,6 +516,11 @@ static void IRAM_ATTR spi_intr(void *arg)
             host->hw->user.usr_miso=1;
         } else {
             host->hw->user.usr_miso=0;
+            //spi fix: let RX DMA work somehow to avoid the problem
+            if (host->dma_chan != 0 ){
+                host->hw->dma_in_link.addr=0;
+                host->hw->dma_in_link.start=1;
+            }
         }
 
         if (trans_buf->txbuf) {
@@ -578,17 +583,17 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
     memset( trans_buf, 0, sizeof(spi_transaction_wbuf) );
     trans_buf->trans = trans_desc;
 
+        //Default rxlength to be the same as length, if not filled in.
+    if (trans_desc->rxlength==0) {
+        trans_desc->rxlength=trans_desc->length;
+    }
+
     uint32_t *rxdata;
     // rx memory assign
     if ( trans_desc->flags & SPI_TRANS_USE_RXDATA )
         rxdata = (uint32_t*)&trans_desc->rx_data[0];
     else //if not use RXDATA neither rx_buffer, rx data assigned to NULL
         rxdata = trans_desc->rx_buffer;
-
-    //Default rxlength to be the same as length, if not filled in.
-    if (trans_desc->rxlength==0 && rxdata) {
-        trans_desc->rxlength=trans_desc->length;
-    }
 
     if ( rxdata && handle->host->dma_chan && !esp_ptr_dma_capable( rxdata )) {
         //if rxbuf in the desc not DMA-accessable, malloc a new one
