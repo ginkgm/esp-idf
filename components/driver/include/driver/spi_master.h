@@ -74,7 +74,7 @@ struct spi_transaction_t {
     uint16_t command;               ///< Command data. Specific length was given when device was added to the bus.
     uint64_t address;               ///< Address. Specific length was given when device was added to the bus.
     size_t length;                  ///< Total data length, in bits
-    size_t rxlength;                ///< Total data length received, if different from length. (0 defaults this to the value of ``length``)
+    size_t rxlength;                ///< Total data length received, if different from length. (0 defaults this to the value of ``length``, if ``rx_buffer`` is not NULL and flag ``SPI_TRANS_USE_RXDATA`` not used)
     void *user;                     ///< User-defined variable. Can be used to store eg transaction ID.
     union {
         const void *tx_buffer;      ///< Pointer to transmit buffer, or NULL for no MOSI phase

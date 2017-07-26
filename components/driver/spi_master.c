@@ -569,11 +569,8 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
     SPI_CHECK(!((trans_desc->flags & (SPI_TRANS_MODE_DIO|SPI_TRANS_MODE_QIO)) && (!(handle->cfg.flags & SPI_DEVICE_HALFDUPLEX))), "incompatible iface params", ESP_ERR_INVALID_ARG);
     SPI_CHECK(trans_desc->length <= handle->host->max_transfer_sz*8, "txdata transfer > host maximum", ESP_ERR_INVALID_ARG);
     SPI_CHECK(trans_desc->rxlength <= handle->host->max_transfer_sz*8, "rxdata transfer > host maximum", ESP_ERR_INVALID_ARG);
-
-    //Default rxlength to be the same as length, if not filled in.
-    if (trans_desc->rxlength==0) {
-        trans_desc->rxlength=trans_desc->length;
-    }
+    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_RXDATA) || trans_desc->rxlength == 0 || trans_desc->rx_buffer, "rx_buffer not assigned", ESP_ERR_INVALID_ARG);
+    SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_TXDATA) || trans_desc->length == 0 || trans_desc->tx_buffer, "tx_buffer not assigned", ESP_ERR_INVALID_ARG);
 
     spi_transaction_wbuf *trans_buf = malloc(sizeof(spi_transaction_wbuf));
     if ( NULL==trans_buf )
@@ -587,6 +584,11 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
         rxdata = (uint32_t*)&trans_desc->rx_data[0];
     else //if not use RXDATA neither rx_buffer, rx data assigned to NULL
         rxdata = trans_desc->rx_buffer;
+
+    //Default rxlength to be the same as length, if not filled in.
+    if (trans_desc->rxlength==0 && rxdata) {
+        trans_desc->rxlength=trans_desc->length;
+    }
 
     if ( rxdata && handle->host->dma_chan && !esp_ptr_dma_capable( rxdata )) {
         //if rxbuf in the desc not DMA-accessable, malloc a new one
