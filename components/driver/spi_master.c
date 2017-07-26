@@ -360,6 +360,7 @@ static void IRAM_ATTR spi_intr(void *arg)
     //Ignore all but the trans_done int.
     if (!host->hw->slave.trans_done) return;
 
+    /*------------ deal with the on-flight transaction -----------------*/
     if (host->cur_trans_buf) {
         spi_transaction_t *cur_trans = host->cur_trans_buf->trans;
         //Okay, transaction is done. 
@@ -382,6 +383,8 @@ static void IRAM_ATTR spi_intr(void *arg)
     }
     //Tell common code DMA workaround that our DMA channel is idle. If needed, the code will do a DMA reset.
     if (host->dma_chan) spicommon_dmaworkaround_idle(host->dma_chan);
+
+    /*------------ new transaction starts here ------------------*/
     //ToDo: This is a stupidly simple low-cs-first priority scheme. Make this configurable somehow. - JD
     for (i=0; i<NO_CS; i++) {
         if (host->device[i]) {
@@ -582,10 +585,8 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
     // rx memory assign
     if ( trans_desc->flags & SPI_TRANS_USE_RXDATA )
         rxdata = (uint32_t*)&trans_desc->rx_data[0];
-    else if ( trans_desc->rx_buffer )
+    else //if not use RXDATA neither rx_buffer, rx data assigned to NULL
         rxdata = trans_desc->rx_buffer;
-    else
-        rxdata = NULL;
 
     if ( rxdata && handle->host->dma_chan && !esp_ptr_dma_capable( rxdata )) {
         //if rxbuf in the desc not DMA-accessable, malloc a new one
@@ -601,10 +602,8 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
     // tx memory assign
     if ( trans_desc->flags & SPI_TRANS_USE_TXDATA )
         txdata = (uint32_t*)&trans_desc->tx_data[0];
-    else if ( trans_desc->tx_buffer )
+    else //if not use TXDATA neither tx_buffer, tx data assigned to NULL
         txdata = trans_desc->tx_buffer ;
-    else
-        txdata = NULL;
 
     if ( txdata && handle->host->dma_chan && !esp_ptr_dma_capable( txdata ))    {
         //if txbuf in the desc not DMA-accessable, malloc a new one
