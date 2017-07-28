@@ -542,6 +542,7 @@ static void IRAM_ATTR spi_intr(void *arg)
                 host->hw->user.usr_mosi_highpart=0;
             }
         }
+        ets_printf("tx: %d, rx: %d\n", trans->length, trans->rxlength);
         host->hw->mosi_dlen.usr_mosi_dbitlen=trans->length-1;
         host->hw->miso_dlen.usr_miso_dbitlen=trans->rxlength-1;
 
@@ -576,12 +577,13 @@ esp_err_t spi_device_queue_trans(spi_device_handle_t handle, spi_transaction_t *
     SPI_CHECK(trans_desc->rxlength <= handle->host->max_transfer_sz*8, "rxdata transfer > host maximum", ESP_ERR_INVALID_ARG);
     SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_RXDATA) || trans_desc->rxlength == 0 || trans_desc->rx_buffer, "rx_buffer not assigned", ESP_ERR_INVALID_ARG);
     SPI_CHECK((trans_desc->flags & SPI_TRANS_USE_TXDATA) || trans_desc->length == 0 || trans_desc->tx_buffer, "tx_buffer not assigned", ESP_ERR_INVALID_ARG);
+    SPI_CHECK((handle->cfg.flags & SPI_DEVICE_HALFDUPLEX) || trans_desc->rxlength <= trans_desc->length, "rx length > tx length in full duplex mode", ESP_ERR_INVALID_ARG);
 
     //Default rxlength to be the same as length, if not filled in.
-    // set rxlength to length is ok, even when rx buffer=NULL
-    if (trans_desc->rxlength==0) {
+    // set rxlength to length is ok, even when rx buffer=NULL    
+    if (trans_desc->rxlength==0 ) {
         trans_desc->rxlength=trans_desc->length;
-    }
+    } 
 
     spi_transaction_wbuf *trans_buf = malloc(sizeof(spi_transaction_wbuf));
     if ( NULL==trans_buf )
