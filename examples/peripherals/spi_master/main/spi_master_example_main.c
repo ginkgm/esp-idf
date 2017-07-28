@@ -683,6 +683,32 @@ static void display_pretty_colors(spi_device_handle_t spi)
 }
 
 
+#define GPIO_NUM_LED        4
+#define GPIO_NUM_KEY        2
+
+void led_button_config()
+{
+    int ret;
+    gpio_config_t gc = {
+        .pin_bit_mask =     1<<GPIO_NUM_LED,
+        .mode =             GPIO_MODE_OUTPUT,
+        .intr_type =        GPIO_INTR_DISABLE,
+    };
+
+    ret = gpio_config( &gc );
+    assert(ret==ESP_OK);
+    
+    gpio_set_level(GPIO_NUM_LED, 1);
+
+    gc.pin_bit_mask = 1<<GPIO_NUM_KEY;
+    gc.mode = GPIO_MODE_INPUT;
+    gc.pull_up_en = 1;
+
+    ret = gpio_config( &gc );
+    assert(ret==ESP_OK);
+    
+        
+}
 
 
 void app_main()
@@ -692,6 +718,8 @@ void app_main()
     esp_err_t ret;
     spi_device_handle_t spi;
     spi_dev_t *hw;
+
+    led_button_config();
 
 
     memset( buffer, 0x66, 320*2);
@@ -711,8 +739,8 @@ void app_main()
         .queue_size=7,                          //We want to be able to queue 7 transactions at a time
         .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
         .flags = SPI_DEVICE_HALFDUPLEX,
-//        .command_bits = 8,
-//        .address_bits = 24,
+        .command_bits = 8,
+        .address_bits = 8,
     };
     
     //Initialize the SPI bus
@@ -766,9 +794,11 @@ void app_main()
     spi_transaction_t trans;
     memset(&trans, 0, sizeof(spi_transaction_t));
     trans.rx_buffer=buffer;
-    trans.tx_buffer=ili_pic_data;
-    trans.length=8*4;
+    trans.tx_buffer=ili_pic_data+3  ;
+    trans.length=8*2;
     trans.rxlength=8*2;
+    trans.command = 0x33;
+    trans.address = 0x47;
 //    trans.flags = SPI_TRANS_USE_RXDATA;
     spi_device_transmit(spi, &trans);
     
@@ -779,7 +809,16 @@ void app_main()
         printf("%02X ", ((uint8_t*)buffer)[i]);
     }
     printf("\n");
-    while(1);
+
+
+    vTaskDelay(1000/portTICK_PERIOD_MS);
+
+    gpio_set_level(GPIO_NUM_LED, 0);
+
+    while(1) {
+        if ( gpio_get_level(GPIO_NUM_KEY) == 0 )
+            esp_restart();
+    }
 
 
 
