@@ -728,9 +728,9 @@ void app_main()
         .spics_io_num=PIN_NUM_CS,               //CS pin
         .queue_size=7,                          //We want to be able to queue 7 transactions at a time
         .pre_cb=ili_spi_pre_transfer_callback,  //Specify pre-transfer callback to handle D/C line
-        .flags = SPI_DEVICE_HALFDUPLEX,
-        .command_bits = 8,
-        .address_bits = 8,
+//        .flags = SPI_DEVICE_HALFDUPLEX,
+//        .command_bits = 8,
+//        .address_bits = 8,
     };
     //Initialize the SPI bus
     ret=spi_bus_initialize(HSPI_HOST, &buscfg, 1);

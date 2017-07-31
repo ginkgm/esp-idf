@@ -153,6 +153,9 @@ static const spi_signal_conn_t io_signal[3] = {
 //Periph 1 is 'claimed' by SPI flash code.
 static bool spi_periph_claimed[3] = {true, false, false};
 
+//use dummy area to hold useless data from RX DMA
+static uint8_t spi_dma_dummy[SPI_DUMMY_SIZE];
+
 //Returns true if this peripheral is successfully claimed, false if otherwise.
 bool spicommon_periph_claim(spi_host_device_t host)
 {
@@ -305,21 +308,32 @@ void spicommon_cs_free(spi_host_device_t host, int cs_io_num)
     reset_func_to_gpio(io_signal[host].spics_out[cs_io_num]);
 }
 
-//Set up a list of dma descriptors. dmadesc is an array of descriptors. Data is the buffer to point to.
-void spicommon_setup_dma_desc_links(lldesc_t *dmadesc, int len, const uint8_t *data, bool isrx)
+//Set up a list of dma descriptors. dmadesc is an array of descriptors. Data is the buffer to point to. 
+void spicommon_setup_dma_desc_links(lldesc_t *dmadesc, int len, const uint8_t *data, int rx_total)
 {
     int n = 0;
+    int dmachunklen;
+
+    //TX copy the exact length data
+    //Receive needs DMA length rounded to next 32-bit boundary. 
+    //The rest data will be copied to a temporary buffer and copied to the receive buffer by CPU later.
+    
+    //calculate the rest data;
+    //rx process: 1) copy complete blocks multiplies of SPI_MAX_DMA_LEN
+    //  2) copy rest of len rounded to  previous 32-bit boundary
+    //  3) copy rest of len after 2) (<4 bytes) + a few words
+    //  4) copy rest complete blocks of SPI_MAX_DMA_LEN
+    if ( rx_total ) {
+        len &= (~3); 
+        rx_total = (rx_total - len + 3)&(~3);
+    }
     while (len) {
-        int dmachunklen = len;
-        if (dmachunklen > SPI_MAX_DMA_LEN) dmachunklen = SPI_MAX_DMA_LEN;
-        if (isrx) {
-            //Receive needs DMA length rounded to next 32-bit boundary
-            dmadesc[n].size = (dmachunklen + 3) & (~3);
-            dmadesc[n].length = (dmachunklen + 3) & (~3);
-        } else {
-            dmadesc[n].size = dmachunklen;
-            dmadesc[n].length = dmachunklen;
-        }
+        //RX: copy 1) and 2)
+        dmachunklen = len;
+        if (dmachunklen > SPI_MAX_DMA_LEN) dmachunklen = SPI_MAX_DMA_LEN;        
+        
+        dmadesc[n].size = dmachunklen;
+        dmadesc[n].length = dmachunklen;
         dmadesc[n].buf = (uint8_t *)data;
         dmadesc[n].eof = 0;
         dmadesc[n].sosf = 0;
@@ -329,9 +343,48 @@ void spicommon_setup_dma_desc_links(lldesc_t *dmadesc, int len, const uint8_t *d
         data += dmachunklen;
         n++;
     }
+
+    // RX: copy 3)
+    len = rx_total;
+    if ( len % SPI_MAX_DMA_LEN ) {
+        dmachunklen = len % SPI_MAX_DMA_LEN;
+        dmadesc[n].size = dmachunklen;
+        dmadesc[n].length = dmachunklen;
+        dmadesc[n].buf = (uint8_t*) spi_dma_dummy;
+        dmadesc[n].eof = 0;
+        dmadesc[n].sosf = 0;
+        dmadesc[n].owner = 1;
+        dmadesc[n].qe.stqe_next = &dmadesc[n + 1];
+        len -= dmachunklen;
+        data += dmachunklen;
+        n++;
+    }
+
+    // RX: copy 4)
+    /*
+    while ( len ) {
+        dmachunklen = SPI_MAX_DMA_LEN;  
+        dmadesc[n].size = dmachunklen;
+        dmadesc[n].length = dmachunklen;
+        dmadesc[n].buf = (uint8_t*) ;
+        dmadesc[n].eof = 0;
+        dmadesc[n].sosf = 0;
+        dmadesc[n].owner = 1;
+        dmadesc[n].qe.stqe_next = &dmadesc[n + 1];
+        len -= dmachunklen;
+        data += dmachunklen;
+        n++;
+    }*/
     dmadesc[n - 1].eof = 1; //Mark last DMA desc as end of stream.
     dmadesc[n - 1].qe.stqe_next = NULL;
 }
+
+
+void spicommon_copy_last_data(uint8_t* data, int len)
+{
+    memcpy( data, spi_dma_dummy, len);
+}
+
 
 
 /*
@@ -344,6 +397,7 @@ static dmaworkaround_cb_t dmaworkaround_cb;
 static void *dmaworkaround_cb_arg;
 static portMUX_TYPE dmaworkaround_mux = portMUX_INITIALIZER_UNLOCKED;
 static int dmaworkaround_waiting_for_chan = 0;
+
 
 bool IRAM_ATTR spicommon_dmaworkaround_req_reset(int dmachan, dmaworkaround_cb_t cb, void *arg)
 {
@@ -393,5 +447,6 @@ void IRAM_ATTR spicommon_dmaworkaround_transfer_active(int dmachan)
     dmaworkaround_channels_busy[dmachan-1] = 1;
     portEXIT_CRITICAL(&dmaworkaround_mux);
 }
+
 
 

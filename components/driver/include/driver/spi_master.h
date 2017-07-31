@@ -74,14 +74,14 @@ struct spi_transaction_t {
     uint16_t command;               ///< Command data. Specific length was given when device was added to the bus.
     uint64_t address;               ///< Address. Specific length was given when device was added to the bus.
     size_t length;                  ///< Total data length, in bits
-    size_t rxlength;                ///< Total data length received, if different from length. (0 defaults this to the value of ``length``)
+    size_t rxlength;                ///< Total data length received, not used in full-duplex mode. (0 defaults this to the value of ``length``)
     void *user;                     ///< User-defined variable. Can be used to store eg transaction ID.
     union {
         const void *tx_buffer;      ///< Pointer to transmit buffer, or NULL for no MOSI phase
         uint8_t tx_data[4];         ///< If SPI_USE_TXDATA is set, data set here is sent directly from this variable.
     };
     union {
-        void *rx_buffer;            ///< Pointer to receive buffer, or NULL for no MISO phase
+        void *rx_buffer;            ///< Pointer to receive buffer, or NULL for no MISO phase.
         uint8_t rx_data[4];         ///< If SPI_USE_RXDATA is set, data is received directly to this variable
     };
 };

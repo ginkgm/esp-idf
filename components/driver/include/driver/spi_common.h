@@ -32,6 +32,9 @@ extern "C"
 //Maximum amount of bytes that can be put in one DMA descriptor
 #define SPI_MAX_DMA_LEN (4096-4)
 
+//dummy area to get around the silicon v0/v1 DMA issue.
+#define SPI_DUMMY_SIZE  1024    //should be multiple of 4
+#define MIN_PAGE_SIZE   (min(SPI_DUMMY_SIZE, SPI_MAX_DMA_LEN))
 
 /**
  * @brief Enum with the three SPI peripherals that are software-accessible in it
@@ -150,7 +153,7 @@ void spicommon_cs_free(spi_host_device_t host, int cs_num);
  * @param data Data buffer to use for DMA transfer
  * @param isrx True if data is to be written into ``data``, false if it's to be read from ``data``.
  */
-void spicommon_setup_dma_desc_links(lldesc_t *dmadesc, int len, const uint8_t *data, bool isrx);
+void spicommon_setup_dma_desc_links(lldesc_t *dmadesc, int len, const uint8_t *data, int rx_total);
 
 /**
  * @brief Get the position of the hardware registers for a specific SPI host
@@ -170,6 +173,15 @@ spi_dev_t *spicommon_hw_for_host(spi_host_device_t host);
  */
 int spicommon_irqsource_for_host(spi_host_device_t host);
 
+
+/**
+ * @brief Copy the last data from DMA temporary buffer to the recceiver buffer
+ *
+ * @param data Buffe to put the last data
+ *
+ * @param len Last data length
+ */
+void spicommon_copy_last_data(uint8_t* data, int len);
 
 
 

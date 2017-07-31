@@ -60,6 +60,10 @@ queue and re-enabling the interrupt will trigger the interrupt again, which can 
 #include "driver/periph_ctrl.h"
 #include "esp_heap_caps.h"
 
+#ifndef min
+#define min(a,b) ((a) < (b) ? (a) : (b))
+#endif
+
 typedef struct spi_device_t spi_device_t;
 
 #define NO_CS 3     //Number of CS pins per SPI host
@@ -71,7 +75,7 @@ typedef struct {
     const uint32_t *txbuf;  //place the address malloc or given by user app.
     uint32_t *tx_malloc_add; // if user address is not DMA-accessable, malloc a new one, or left 0.
     uint32_t *rxbuf;
-    uint32_t *rx_malloc_add;
+    uint32_t *rx_malloc_add; 
 } spi_transaction_wbuf;
 
 typedef struct {
@@ -104,7 +108,6 @@ static const char *SPI_TAG = "spi_master";
         return (ret_val); \
     }
 
-
 static void spi_intr(void *arg);
 
 esp_err_t spi_bus_initialize(spi_host_device_t host, const spi_bus_config_t *bus_config, int dma_chan)
@@ -130,9 +133,9 @@ esp_err_t spi_bus_initialize(spi_host_device_t host, const spi_bus_config_t *bus
         spihost[host]->max_transfer_sz = 32;
     } else {
         //See how many dma descriptors we need and allocate them
-        int dma_desc_ct=(bus_config->max_transfer_sz+SPI_MAX_DMA_LEN-1)/SPI_MAX_DMA_LEN;
+        int dma_desc_ct=(bus_config->max_transfer_sz+MIN_PAGE_SIZE-1)/MIN_PAGE_SIZE;
         if (dma_desc_ct==0) dma_desc_ct=1; //default to 4k when max is not given
-        spihost[host]->max_transfer_sz = dma_desc_ct*SPI_MAX_DMA_LEN;
+        spihost[host]->max_transfer_sz = dma_desc_ct*MIN_PAGE_SIZE;
         spihost[host]->dmadesc_tx=heap_caps_malloc(sizeof(lldesc_t)*dma_desc_ct, MALLOC_CAP_DMA);
         spihost[host]->dmadesc_rx=heap_caps_malloc(sizeof(lldesc_t)*dma_desc_ct, MALLOC_CAP_DMA);
         if (!spihost[host]->dmadesc_tx || !spihost[host]->dmadesc_rx) goto nomem;
@@ -373,6 +376,10 @@ static void IRAM_ATTR spi_intr(void *arg)
                 if (len>32) len=32;
                 memcpy(&host->cur_trans_buf->rxbuf[x/32], &word, (len+7)/8);
             }
+        } else {
+            int len_rest = cur_trans->rxlength % 4;
+            if ( len_rest ) 
+                spicommon_copy_last_data( cur_trans->rx_buffer+(cur_trans->rxlength-len_rest), len_rest ); 
         }
         //Call post-transaction callback, if any
         if (host->device[host->cur_cs]->cfg.post_cb) host->device[host->cur_cs]->cfg.post_cb(cur_trans);
@@ -500,7 +507,7 @@ static void IRAM_ATTR spi_intr(void *arg)
             }
             host->hw->ctrl.fastrd_mode=1;
         }
-
+        
 
         //Fill DMA descriptors
         if (trans_buf->rxbuf) {
@@ -509,13 +516,11 @@ static void IRAM_ATTR spi_intr(void *arg)
                 //No need to setup anything; we'll copy the result out of the work registers directly later.
             } else {
                 spicommon_dmaworkaround_transfer_active(host->dma_chan); //mark channel as active
-                spicommon_setup_dma_desc_links(host->dmadesc_rx, ((trans->rxlength+7)/8), (uint8_t*)trans_buf->rxbuf, true);
+                spicommon_setup_dma_desc_links(host->dmadesc_rx, ((trans->rxlength+7)/8), (uint8_t*)trans_buf->rxbuf, (trans->length+7)/8);
                 host->hw->dma_in_link.addr=(int)(&host->dmadesc_rx[0]) & 0xFFFFF;
                 host->hw->dma_in_link.start=1;
             }
-            host->hw->user.usr_miso=1;
         } else {
-            host->hw->user.usr_miso=0;
             //spi fix: let RX DMA work somehow to avoid the problem
             if (host->dma_chan != 0 ){
                 host->hw->dma_in_link.addr=0;
@@ -542,10 +547,15 @@ static void IRAM_ATTR spi_intr(void *arg)
                 host->hw->user.usr_mosi_highpart=0;
             }
         }
-        ets_printf("tx: %d, rx: %d\n", trans->length, trans->rxlength);
-        host->hw->mosi_dlen.usr_mosi_dbitlen=trans->length-1;
-        host->hw->miso_dlen.usr_miso_dbitlen=trans->rxlength-1;
 
+        
+
+        host->hw->mosi_dlen.usr_mosi_dbitlen=trans->length-1;
+        if ( dev->cfg.flags & SPI_DEVICE_HALFDUPLEX )
+            host->hw->miso_dlen.usr_miso_dbitlen=trans->rxlength-1;
+        else    //rxlength is not used in full-duplex mode
+            host->hw->miso_dlen.usr_miso_dbitlen=trans->length-1;
+            
         host->hw->user2.usr_command_value=trans->command;
         if (dev->cfg.address_bits>32) {
             host->hw->addr=trans->address >> 32;
@@ -553,7 +563,7 @@ static void IRAM_ATTR spi_intr(void *arg)
         } else {
             host->hw->addr=trans->address & 0xffffffff;
         }
-        host->hw->user.usr_mosi=(trans_buf->txbuf)?1:0;
+        host->hw->user.usr_mosi=(!(dev->cfg.flags & SPI_DEVICE_HALFDUPLEX) || trans_buf->txbuf)?1:0;
         host->hw->user.usr_miso=(trans_buf->rxbuf)?1:0;
 
         //Call pre-transmission callback, if any
