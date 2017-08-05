@@ -301,6 +301,8 @@ TEST_CASE("SPI Master DMA test, TX and RX in different regions", "[spi]"){
     static spi_transaction_t trans[6];
     int x;
 
+    printf("iram: %p, dram: %p, drom: %p\n", data_iram, data_dram, data_drom);
+
     memset(trans, 0, 6*sizeof(spi_transaction_t));
 
     trans[0].length = 320*8,
